@@ -1,7 +1,7 @@
 
   # SoundStruck
 
-  This is a code bundle for SoundStruck. The original project is available at https://www.figma.com/design/tVCsAShM808nEg0FpCfIoA/SoundStruck.
+  This is a code bundle for SoundStruck, an entry for the Contra Competition. The original project is available at https://www.figma.com/design/tVCsAShM808nEg0FpCfIoA/SoundStruck.
 
   ## Running the code
 
