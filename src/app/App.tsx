@@ -25,6 +25,8 @@ import {
   Share2,
   ChevronDown,
   X,
+  FileAudio,
+  FileVideo,
 } from "lucide-react";
 import { VoiceBlob } from "./components/VoiceBlob";
 import { PitchWave } from "./components/PitchWave";
@@ -91,6 +93,7 @@ function Studio() {
   const [expandedLesson, setExpandedLesson] = useState<number | null>(0);
   const [coachReplying, setCoachReplying] = useState(false);
   const [cameraAsBackground, setCameraAsBackground] = useState(false);
+  const [recClock, setRecClock] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const replyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -129,6 +132,18 @@ function Studio() {
     }, 100);
     return () => clearInterval(id);
   }, [playing, duration]);
+
+  // Advance recording clock
+  useEffect(() => {
+    if (!eng.recording || !eng.recStartTime) {
+      setRecClock(0);
+      return;
+    }
+    const id = setInterval(() => {
+      setRecClock(Math.floor((Date.now() - eng.recStartTime!) / 1000));
+    }, 250);
+    return () => clearInterval(id);
+  }, [eng.recording, eng.recStartTime]);
 
   // 3-2-1 countdown, then start the music aligned to the pitch notes
   useEffect(() => {
@@ -322,7 +337,8 @@ function Studio() {
     } else draw();
   };
 
-  const recExt = eng.recordedMime.includes("video") ? "webm" : "webm";
+  const hasVideo = eng.recordedMime.includes("video");
+  const recExt = hasVideo ? "webm" : "weba";
 
   return (
     <div className="size-full overflow-hidden text-white"
@@ -349,8 +365,11 @@ function Studio() {
         </header>
 
         {eng.error && (
-          <div className="mx-2 rounded-lg px-3 py-2" style={{ background: `${figma.red}22`, fontSize: 13 }}>
-            {eng.error}
+          <div className="mx-2 flex items-center gap-3 rounded-lg px-3 py-2" style={{ background: `${figma.red}22`, fontSize: 13 }}>
+            <span className="flex-1">{eng.error}</span>
+            <button onClick={() => eng.clearError()} className="shrink-0 rounded-md p-1 hover:bg-white/10" title="Dismiss">
+              <X className="h-4 w-4 text-white/50" />
+            </button>
           </div>
         )}
 
@@ -383,8 +402,8 @@ function Studio() {
                     <div key={l.id} className="overflow-hidden rounded-xl transition-colors"
                       style={{ background: open ? "rgba(255,255,255,0.06)" : "transparent",
                         border: `1px solid ${open ? "rgba(255,255,255,0.1)" : "transparent"}` }}>
-                      <div className="flex items-center gap-2 pr-2">
-                        <button onClick={() => selectLesson(i)} className="flex flex-1 items-center gap-3 px-3 py-2 text-left">
+                      <div className="flex items-center gap-2 px-1">
+                        <button onClick={() => selectLesson(i)} className="flex flex-1 min-w-0 items-center gap-3 px-2 py-2 text-left">
                           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: figma.purple, opacity: i === lessonIdx ? 1 : 0.4 }} />
                           <span className="flex-1 truncate" style={{ fontSize: 14,
                             color: done ? "rgba(255,255,255,0.4)" : open || i === lessonIdx ? "#fff" : "rgba(255,255,255,0.65)",
@@ -611,7 +630,7 @@ function Studio() {
               <Toggle icon={eng.cameraOn ? <Camera className="h-4 w-4" /> : <CameraOff className="h-4 w-4" />}
                 label="Camera" color={figma.blue} on={eng.cameraOn} onClick={toggleCamera} />
               <Toggle icon={eng.recording ? <Square className="h-4 w-4" /> : <Video className="h-4 w-4" />}
-                label={eng.recording ? "Stop Recording" : "Record Audio/Video"} color={figma.red}
+                label={eng.recording ? `Stop Recording (${fmtTime(recClock)})` : "Record Audio/Video"} color={figma.red}
                 on={eng.recording} onClick={toggleRecord} />
 
               {/* "Hey Coach" wake word */}
@@ -626,21 +645,36 @@ function Studio() {
                   Listening… {wake.heard && <span className="truncate italic">“{wake.heard}”</span>}
                 </div>
               )}
+              {wake.error && (
+                <div className="mb-1 px-3 text-white/50" style={{ fontSize: 11, color: figma.orange }}>
+                  {wake.error}
+                </div>
+              )}
 
               {/* recording results: download + share */}
               {eng.recordedUrl && !eng.recording && (
                 <div className="mt-3 rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
                   <div className="mb-2 text-white/50" style={{ fontSize: 12 }}>Your performance is ready! 🎉</div>
-                  {eng.recordedMime.includes("video") ? (
+                  {hasVideo ? (
                     <video src={eng.recordedUrl} controls className="mb-2 w-full rounded-lg" />
                   ) : (
                     <audio src={eng.recordedUrl} controls className="mb-2 w-full" />
                   )}
-                  <a href={eng.recordedUrl} download={`soundstruck-recording.${recExt}`}
-                    className="flex items-center justify-center gap-2 rounded-lg py-2 transition-transform hover:scale-[1.02]"
-                    style={{ background: figma.blue, fontSize: 13, color: "#fff" }}>
-                    <Download className="h-4 w-4" /> Download
-                  </a>
+                  {/* Download buttons — separate video and audio options */}
+                  <div className="flex flex-col gap-2">
+                    {hasVideo && (
+                      <button onClick={() => eng.downloadAs("video")}
+                        className="flex items-center justify-center gap-2 rounded-lg py-2 transition-transform hover:scale-[1.02]"
+                        style={{ background: figma.blue, fontSize: 13 }}>
+                        <FileVideo className="h-4 w-4" /> Download as Video
+                      </button>
+                    )}
+                    <button onClick={() => eng.downloadAs("audio")}
+                      className="flex items-center justify-center gap-2 rounded-lg py-2 transition-transform hover:scale-[1.02]"
+                      style={{ background: hasVideo ? "rgba(255,255,255,0.1)" : figma.blue, fontSize: 13 }}>
+                      <FileAudio className="h-4 w-4" /> Download as Audio
+                    </button>
+                  </div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
                     <button onClick={() => shareRecording("instagram")}
                       className="flex items-center justify-center gap-1.5 rounded-lg py-2 transition-transform hover:scale-[1.02]"
@@ -657,29 +691,7 @@ function Studio() {
               )}
             </Panel>
 
-            <Panel>
-              <SectionTitle icon={<Mic2 className="h-4 w-4" />}>Coach Voice Changer</SectionTitle>
-              <div className="flex flex-col gap-1">
-                {personas.map((p) => (
-                  <button key={p.id} onClick={() => pickPersona(p)}
-                    className="flex items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors"
-                    style={{ background: personaId === p.id ? "rgba(255,255,255,0.08)" : "transparent" }}>
-                    <div className="rounded-xl p-1" style={{ background: `${p.color}22` }}>
-                      <p.Illustration size={40} />
-                    </div>
-                    <div className="flex-1">
-                      <div style={{ fontSize: 14 }}>{p.name}</div>
-                      <div className="text-white/40" style={{ fontSize: 11 }}>{p.tagline}</div>
-                    </div>
-                    {personaId === p.id && (
-                      <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
-                    )}
-                  </button>
-                ))}
-              </div>
-            </Panel>
-
-            {/* Camera output (lower-right) */}
+            {/* Camera output */}
             <Panel>
               <SectionTitle icon={<Camera className="h-4 w-4" />}>Camera</SectionTitle>
               <div className="relative overflow-hidden rounded-xl bg-black/50" style={{ aspectRatio: "16/10" }}>
@@ -707,6 +719,28 @@ function Studio() {
                     style={{ left: cameraAsBackground && eng.cameraOn ? 18 : 2 }} />
                 </span>
               </button>
+            </Panel>
+
+            <Panel>
+              <SectionTitle icon={<Mic2 className="h-4 w-4" />}>Coach Voice Changer</SectionTitle>
+              <div className="flex flex-col gap-1">
+                {personas.map((p) => (
+                  <button key={p.id} onClick={() => pickPersona(p)}
+                    className="flex items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors"
+                    style={{ background: personaId === p.id ? "rgba(255,255,255,0.08)" : "transparent" }}>
+                    <div className="rounded-xl p-1" style={{ background: `${p.color}22` }}>
+                      <p.Illustration size={40} />
+                    </div>
+                    <div className="flex-1">
+                      <div style={{ fontSize: 14 }}>{p.name}</div>
+                      <div className="text-white/40" style={{ fontSize: 11 }}>{p.tagline}</div>
+                    </div>
+                    {personaId === p.id && (
+                      <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
+                    )}
+                  </button>
+                ))}
+              </div>
             </Panel>
           </aside>
         </div>

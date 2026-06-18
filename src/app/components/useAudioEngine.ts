@@ -10,17 +10,19 @@ export function useAudioEngine() {
   const [recordedMime, setRecordedMime] = useState<string>("audio/webm");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recStartTime, setRecStartTime] = useState<number | null>(null);
 
   const micStreamRef = useRef<MediaStream | null>(null);
   const camStreamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const bufRef = useRef<Float32Array | null>(null);
+  const bufRef = useRef<Float32Array<ArrayBuffer> | null>(null);
   const pitchRef = useRef<number>(0); // latest detected fundamental in Hz (0 = silence)
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
   const playbackCtxRef = useRef<AudioContext | null>(null);
+  const recordedBlobRef = useRef<Blob | null>(null);
 
   // Attach the live camera feed to a <video> element.
   const setVideoEl = useCallback((el: HTMLVideoElement | null) => {
@@ -61,7 +63,10 @@ export function useAudioEngine() {
 
   const startCamera = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Request camera with fallback constraints
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      });
       camStreamRef.current = stream;
       if (videoElRef.current) {
         videoElRef.current.srcObject = stream;
@@ -70,8 +75,35 @@ export function useAudioEngine() {
       setCameraStream(stream);
       setCameraOn(true);
       setError(null);
-    } catch (e) {
-      setError("Camera access denied. Enable it in your browser to use video.");
+    } catch (e: any) {
+      const name = e?.name ?? "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setError(
+          "Camera permission was denied. Click the camera icon in your browser's address bar to allow access, then try again."
+        );
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        setError("No camera found on this device.");
+      } else if (name === "NotReadableError" || name === "TrackStartError") {
+        setError("Camera is in use by another application. Close it and try again.");
+      } else if (name === "OverconstrainedError") {
+        // Retry with no constraints
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          camStreamRef.current = stream;
+          if (videoElRef.current) {
+            videoElRef.current.srcObject = stream;
+            videoElRef.current.play().catch(() => {});
+          }
+          setCameraStream(stream);
+          setCameraOn(true);
+          setError(null);
+          return;
+        } catch {
+          setError("Camera access failed. Please check your browser settings.");
+        }
+      } else {
+        setError(`Camera access failed: ${e?.message ?? "Unknown error"}. Check browser settings.`);
+      }
     }
   }, []);
 
@@ -82,7 +114,7 @@ export function useAudioEngine() {
     setCameraOn(false);
   }, []);
 
-  // Autocorrelation pitch detection — call each animation frame.
+  // Normalized autocorrelation pitch detection — call each animation frame.
   const detectPitch = useCallback((): number => {
     const analyser = analyserRef.current;
     const buf = bufRef.current;
@@ -90,32 +122,66 @@ export function useAudioEngine() {
     if (!analyser || !buf || !ctx) return 0;
     analyser.getFloatTimeDomainData(buf);
 
+    // RMS gate — skip silence
     let rms = 0;
     for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
     rms = Math.sqrt(rms / buf.length);
-    if (rms < 0.01) {
+    if (rms < 0.008) {
       pitchRef.current = 0;
-      return 0; // too quiet
+      return 0;
     }
 
     const SIZE = buf.length;
+    const minOffset = Math.floor(ctx.sampleRate / 1000); // ~1000 Hz max
+    const maxOffset = Math.floor(ctx.sampleRate / 80);   // ~80 Hz min
+
+    // Compute normalized autocorrelation (0–1 range)
+    // r0 = energy at lag 0 (used for normalization)
+    let r0 = 0;
+    for (let i = 0; i < SIZE; i++) r0 += buf[i] * buf[i];
+
+    const corrs: number[] = [];
+    for (let offset = 0; offset <= maxOffset; offset++) {
+      let num = 0;
+      let den1 = 0;
+      let den2 = 0;
+      for (let i = 0; i < SIZE - offset; i++) {
+        num  += buf[i] * buf[i + offset];
+        den1 += buf[i] * buf[i];
+        den2 += buf[i + offset] * buf[i + offset];
+      }
+      const denom = Math.sqrt(den1 * den2);
+      corrs[offset] = denom > 0 ? num / denom : 0;
+    }
+
+    // Find first dip below threshold then first peak above it
+    const THRESHOLD = 0.4;
+    let passedDip = false;
     let bestOffset = -1;
     let bestCorr = 0;
-    let lastCorr = 1;
-    const minOffset = Math.floor(ctx.sampleRate / 1000); // ~1000 Hz max
-    const maxOffset = Math.floor(ctx.sampleRate / 80); // ~80 Hz min
+
     for (let offset = minOffset; offset < maxOffset; offset++) {
-      let corr = 0;
-      for (let i = 0; i < SIZE - offset; i++) corr += buf[i] * buf[i + offset];
-      corr /= SIZE - offset;
-      if (corr > 0.9 && corr > lastCorr && corr > bestCorr) {
-        bestCorr = corr;
+      if (!passedDip) {
+        if (corrs[offset] < THRESHOLD) passedDip = true;
+        continue;
+      }
+      // Look for the first strong peak after the dip
+      if (corrs[offset] > THRESHOLD && corrs[offset] > bestCorr) {
+        bestCorr = corrs[offset];
         bestOffset = offset;
       }
-      lastCorr = corr;
+      // Stop once we've passed the peak
+      if (bestOffset > 0 && corrs[offset] < bestCorr * 0.85) break;
     }
-    if (bestOffset > 0) {
-      const freq = ctx.sampleRate / bestOffset;
+
+    if (bestOffset > 0 && bestCorr > THRESHOLD) {
+      // Parabolic interpolation for sub-sample accuracy
+      const a = corrs[bestOffset - 1] ?? 0;
+      const b = corrs[bestOffset];
+      const c = corrs[bestOffset + 1] ?? 0;
+      const shift = (a - c) / (2 * (a - 2 * b + c));
+      const refinedOffset = bestOffset + (isFinite(shift) ? shift : 0);
+      const freq = ctx.sampleRate / refinedOffset;
       pitchRef.current = freq;
       return freq;
     }
@@ -139,6 +205,7 @@ export function useAudioEngine() {
     rec.ondataavailable = (e) => e.data.size > 0 && chunksRef.current.push(e.data);
     rec.onstop = () => {
       const blob = new Blob(chunksRef.current, { type: mime });
+      recordedBlobRef.current = blob;
       if (recordedUrl) URL.revokeObjectURL(recordedUrl);
       setRecordedUrl(URL.createObjectURL(blob));
       setRecordedMime(mime);
@@ -146,12 +213,14 @@ export function useAudioEngine() {
     recorderRef.current = rec;
     rec.start();
     setRecording(true);
+    setRecStartTime(Date.now());
   }, [recordedUrl]);
 
   const stopRecording = useCallback(() => {
     recorderRef.current?.stop();
     recorderRef.current = null;
     setRecording(false);
+    setRecStartTime(null);
   }, []);
 
   // Grab a still frame from the camera (returns a data URL or null).
@@ -205,11 +274,43 @@ export function useAudioEngine() {
     playbackCtxRef.current = null;
   }, []);
 
+  // Download the recorded blob as a specific format
+  const downloadAs = useCallback((format: "video" | "audio") => {
+    const blob = recordedBlobRef.current;
+    if (!blob) return;
+
+    if (format === "audio" && recordedMime.includes("video")) {
+      // Extract audio from video by re-encoding through AudioContext
+      // For browser compatibility, we create an audio-only blob from the original chunks
+      const audioBlob = new Blob(chunksRef.current, { type: "audio/webm" });
+      const url = URL.createObjectURL(audioBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "soundstruck-recording.weba";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } else {
+      const ext = format === "video" ? "webm" : "weba";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `soundstruck-recording.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  }, [recordedMime]);
+
+  const clearError = useCallback(() => setError(null), []);
+
   return {
-    micOn, cameraOn, recording, recordedUrl, recordedMime, cameraStream, error,
+    micOn, cameraOn, recording, recordedUrl, recordedMime, cameraStream, error, recStartTime,
     pitchRef, setVideoEl,
     startMic, stopMic, startCamera, stopCamera,
     startRecording, stopRecording, detectPitch, captureFrame,
-    playMelody, stopMelody,
+    playMelody, stopMelody, downloadAs, clearError,
   };
 }

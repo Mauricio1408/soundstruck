@@ -9,15 +9,56 @@ export function useWakeWord(onWake: () => void) {
       : null;
   const [listening, setListening] = useState(false);
   const [heard, setHeard] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const recRef = useRef<any>(null);
   const wantRef = useRef(false); // whether we intend to keep listening
   const lastFireRef = useRef(0);
+  const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onWakeRef = useRef(onWake);
   onWakeRef.current = onWake;
+
+  const clearRestart = () => {
+    if (restartTimer.current) {
+      clearTimeout(restartTimer.current);
+      restartTimer.current = null;
+    }
+  };
+
+  const restart = useCallback((rec: any) => {
+    clearRestart();
+    if (!wantRef.current) {
+      setListening(false);
+      return;
+    }
+    // Small delay before restarting to avoid rapid start/stop thrashing
+    restartTimer.current = setTimeout(() => {
+      if (!wantRef.current) return;
+      try {
+        rec.start();
+      } catch {
+        // If this fails, try creating a new instance
+        try {
+          const fresh = new SR();
+          fresh.continuous = true;
+          fresh.interimResults = true;
+          fresh.lang = "en-US";
+          fresh.onresult = rec.onresult;
+          fresh.onend = rec.onend;
+          fresh.onerror = rec.onerror;
+          recRef.current = fresh;
+          fresh.start();
+        } catch {
+          setListening(false);
+          setError("Speech recognition failed to restart.");
+        }
+      }
+    }, 200);
+  }, [SR]);
 
   const start = useCallback(() => {
     if (!SR) return;
     wantRef.current = true;
+    setError(null);
     const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
@@ -37,34 +78,44 @@ export function useWakeWord(onWake: () => void) {
     };
     rec.onend = () => {
       // Chrome stops periodically — restart while the user still wants it.
-      if (wantRef.current) {
-        try {
-          rec.start();
-        } catch {
-          /* ignore overlap errors */
-        }
-      } else {
-        setListening(false);
-      }
+      restart(rec);
     };
-    rec.onerror = () => {};
+    rec.onerror = (e: any) => {
+      const errType = e?.error ?? "";
+      // "no-speech" is normal — just means silence, keep listening
+      if (errType === "no-speech" || errType === "aborted") return;
+      if (errType === "not-allowed" || errType === "service-not-allowed") {
+        setError("Microphone permission needed for \"Hey Coach\".");
+        wantRef.current = false;
+        setListening(false);
+        return;
+      }
+      if (errType === "network") {
+        setError("Network error — speech recognition requires an internet connection in some browsers.");
+        return; // onend will fire and attempt restart
+      }
+      // For other transient errors, let onend handle restart
+    };
 
     recRef.current = rec;
     try {
       rec.start();
       setListening(true);
     } catch {
-      /* already started */
+      setError("Could not start speech recognition.");
     }
-  }, [SR]);
+  }, [SR, restart]);
 
   const stop = useCallback(() => {
     wantRef.current = false;
-    recRef.current?.stop();
+    clearRestart();
+    try { recRef.current?.stop(); } catch { /* already stopped */ }
     recRef.current = null;
     setListening(false);
     setHeard("");
+    setError(null);
   }, []);
 
-  return { supported: !!SR, listening, heard, start, stop };
+  return { supported: !!SR, listening, heard, error, start, stop };
 }
+
