@@ -349,9 +349,12 @@ function Studio() {
       <div className="relative flex h-full flex-col p-4 gap-4">
         {/* Top bar — logo + settings/ai removed, persona swatches kept */}
         <header className="flex items-center justify-between px-2">
-          <div>
-            <div style={{ fontWeight: 600, letterSpacing: "0.04em" }}>SOUNDSTRUCK</div>
-            <div className="text-white/40" style={{ fontSize: 12 }}>Vocal coaching studio</div>
+          <div className="flex items-center gap-3">
+            <img src="/soundstruck-favicon.svg" alt="SoundStruck Logo" className="h-10 w-10" />
+            <div>
+              <div style={{ fontWeight: 600, letterSpacing: "0.04em", fontSize: 18 }}>SOUNDSTRUCK</div>
+              <div className="text-white/40" style={{ fontSize: 12 }}>Vocal coaching studio</div>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="mr-1 text-white/40" style={{ fontSize: 12 }}>Coach</span>
