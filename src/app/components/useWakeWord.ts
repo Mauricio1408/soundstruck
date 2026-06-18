@@ -91,8 +91,10 @@ export function useWakeWord(onWake: () => void) {
         return;
       }
       if (errType === "network") {
-        setError("Network error — speech recognition requires an internet connection in some browsers.");
-        return; // onend will fire and attempt restart
+        setError("Network error — please use Google Chrome or check your connection.");
+        wantRef.current = false;
+        setListening(false);
+        return;
       }
       // For other transient errors, let onend handle restart
     };
